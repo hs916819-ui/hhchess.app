@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chess App (Vanilla JS)</title>
+  <style>
+    :root { --size: 72px; }
+    body {
+      font-family: system-ui, Arial, sans-serif;
+      display: grid;
+      place-items: center;
+      margin: 0;
+      min-height: 100vh;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    .wrap {
+      display: grid;
+      gap: 12px;
+      padding: 18px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .status {
+      font-size: 14px;
+      opacity: 0.95;
+    }
+    button {
+      border: 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #38bdf8;
+      color: #082f49;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.05); }
+    .board {
+      display: grid;
+      grid-template-columns: repeat(8, var(--size));
+      grid-template-rows: repeat(8, var(--size));
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.18);
+    }
+    .sq {
+      width: var(--size);
+      height: var(--size);
+      display: grid;
+      place-items: center;
+      font-size: 42px;
+      user-select: none;
+      cursor: pointer;
+      position: relative;
+    }
+    .light { background: #e2e8f0; color: #0f172a; }
+    .dark  { background: #334155; color: #e2e8f0; }
+
+    .sq.selected::after {
+      content: "";
+      position: absolute;
+      inset: 6px;
+      border-radius: 12px;
+      outline: 3px solid rgba(56, 189, 248, 0.95);
+      outline-offset: 0;
+    }
+    .sq.hint::before {
+      content: "";
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.85);
+    }
+    .sq.capture-hint::before {
+      content: "";
+      position: absolute;
+      inset: 8px;
+      border-radius: 12px;
+      border: 3px solid rgba(56, 189, 248, 0.85);
+      background: transparent;
+    }
+    .legend {
+      font-size: 12px;
+      opacity: 0.8;
+      line-height: 1.35;
+    }
+    @media (max-width: 650px) {
+      :root { --size: 44px; }
+      .sq { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="status" id="status">Loading…</div>
+      <button id="resetBtn">Reset</button>
+    </div>
+
+    <div class="board" id="board"></div>
+
+    <div class="legend">
+      Click a piece to select, then click a destination square. Promotion is automatic (to Queen).
+      <br/>Note: Check/checkmate detection not included yet.
+    </div>
+  </div>
+
+<script>
+(() => {
+  // Board representation: 8x8, each square is null or {type:'p/r/n/b/q/k', color:'w'/'b'}
+  const boardEl = document.getElementById('board');
+  const statusEl = document.getElementById('status');
+  const resetBtn = document.getElementById('resetBtn');
+
+  // Unicode pieces
+  const U = {
+    w: { k:'♔', q:'♕', r:'♖', b:'♗', n:'♘', p:'♙' },
+    b: { k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟' },
+  };
+
+  let board, turn, selected, hints;
+
+  function init() {
+    board = makeStartBoard();
+    turn = 'w';
+    selected = null;
+    hints = [];
+    render();
+    setStatus();
+  }
+
+  function makeStartBoard() {
+    const empty = Array.from({length: 8}, () => Array(8).fill(null));
+    const place = (r,c,type,color) => empty[r][c] = { type, color };
+
+    // Black back rank
+    ['r','n','b','q','k','b','n','r'].forEach((t,c)=>place(0,c,t,'b'));
+    // Black pawns
+    for (let c=0;c<8;c++) place(1,c,'p','b');
+    // White pawns
+    for (let c=0;c<8;c++) place(6,c,'p','w');
+    // White back rank
+    ['r','n','b','q','k','b','n','r'].forEach((t,c)=>place(7,c,t,'w'));
+
+    return empty;
+  }
+
+  function inBounds(r,c){ return r>=0 && r<8 && c>=0 && c<8; }
+  function clonePiece(p){ return p ? {type:p.type, color:p.color} : null; }
+
+  function render() {
+    boardEl.innerHTML = '';
+    for (let r=0;r<8;r++){
+      for (let c=0;c<8;c++){
+        const sq = document.createElement('div');
+        sq.className = 'sq ' + (((r+c)%2===0) ? 'light' : 'dark');
+        sq.dataset.r = r; sq.dataset.c = c;
+
+        const piece = board[r][c];
+        sq.textContent = piece ? U[piece.color][piece.type] : '';
+
+        // selection & hints
+        if (selected && selected.r===r && selected.c===c) sq.classList.add('selected');
+        const hint = hints.find(h => h.r===r && h.c===c);
+        if (hint) sq.classList.add(hint.capture ? 'capture-hint' : 'hint');
+
+        sq.addEventListener('click', onSquareClick);
+        boardEl.appendChild(sq);
+      }
+    }
+  }
+
+  function setStatus(extra='') {
+    const who = (turn==='w') ? 'White' : 'Black';
+    statusEl.textContent = `${who} to move.${extra ? ' ' + extra : ''}`;
+  }
+
+  function onSquareClick(e){
+    const r = Number(e.currentTarget.dataset.r);
+    const c = Number(e.currentTarget.dataset.c);
+    const piece = board[r][c];
+
+    // If nothing selected: select your piece
+    if (!selected) {
+      if (piece && piece.color === turn) {
+        selected = { r, c };
+        hints = legalMovesFrom(r,c).map(m => ({...m}));
+      } else {
+        selected = null; hints = [];
+      }
+      render();
+      return;
+    }
+
+    // If selected: clicking own piece switches selection
+    const selPiece = board[selected.r][selected.c];
+    if (piece && piece.color === turn) {
+      selected = { r, c };
+      hints = legalMovesFrom(r,c).map(m => ({...m}));
+      render();
+      return;
+    }
+
+    // Attempt move to clicked square if it's a legal hint
+    const move = hints.find(h => h.r===r && h.c===c);
+    if (!move) {
+      // clear selection if invalid target
+      selected = null; hints = [];
+      render();
+      return;
+    }
+
+    makeMove(selected.r, selected.c, r, c);
+    selected = null; hints = [];
+    turn = (turn==='w') ? 'b' : 'w';
+    render();
+    setStatus();
+  }
+
+  function makeMove(r1,c1,r2,c2){
+    const p = board[r1][c1];
+    board[r2][c2] = p;
+    board[r1][c1] = null;
+
+    // Pawn promotion (auto queen)
+    if (p.type === 'p') {
+      if (p.color === 'w' && r2 === 0) p.type = 'q';
+      if (p.color === 'b' && r2 === 7) p.type = 'q';
+    }
+  }
+
+  // Generate legal moves for a piece (no check validation)
+  function legalMovesFrom(r,c) {
+    const p = board[r][c];
+    if (!p) return [];
+    const moves = [];
+
+    const add = (rr,cc) => {
+      if (!inBounds(rr,cc)) return;
+      const target = board[rr][cc];
+      if (!target) moves.push({r: rr, c: cc, capture:false});
+      else if (target.color !== p.color) moves.push({r: rr, c: cc, capture:true});
+    };
+
+    const ray = (dr,dc) => {
+      let rr=r+dr, cc=c+dc;
+      while (inBounds(rr,cc)) {
+        const target = board[rr][cc];
+        if (!target) {
+          moves.push({r: rr, c: cc, capture:false});
+        } else {
+          if (target.color !== p.color) moves.push({r: rr, c: cc, capture:true});
+          break;
+        }
+        rr += dr; cc += dc;
+      }
+    };
+
+    if (p.type === 'p') {
+      const dir = (p.color==='w') ? -1 : 1;
+      const startRow = (p.color==='w') ? 6 : 1;
+
+      // forward 1
+      if (inBounds(r+dir,c) && !board[r+dir][c]) {
+        moves.push({r:r+dir,c, capture:false});
+
+        // forward 2 from start
+        if (r === startRow && !board[r+dir*2][c]) {
+          moves.push({r:r+dir*2,c, capture:false});
+        }
+      }
+
+      // captures
+      for (const dc of [-1, 1]) {
+        const rr = r+dir, cc = c+dc;
+        if (inBounds(rr,cc) && board[rr][cc] && board[rr][cc].color !== p.color) {
+          moves.push({r:rr,c:cc, capture:true});
+        }
+      }
+
+      // (En passant not included)
+      return moves;
+    }
+
+    if (p.type === 'n') {
+      const jumps = [
+        [-2,-1],[-2,1],[-1,-2],[-1,2],
+        [1,-2],[1,2],[2,-1],[2,1]
+      ];
+      for (const [dr,dc] of jumps) add(r+dr,c+dc);
+      return moves;
+    }
+
+    if (p.type === 'k') {
+      for (let dr=-1;dr<=1;dr++){
+        for (let dc=-1;dc<=1;dc++){
+          if (dr===0 && dc===0) continue;
+          add(r+dr,c+dc);
+        }
+      }
+      // (Castling not included)
+      return moves;
+    }
+
+    if (p.type === 'b') {
+      ray(-1,-1); ray(-1,1); ray(1,-1); ray(1,1);
+      return moves;
+    }
+
+    if (p.type === 'r') {
+      ray(-1,0); ray(1,0); ray(0,-1); ray(0,1);
+      return moves;
+    }
+
+    if (p.type === 'q') {
+      ray(-1,-1); ray(-1,1); ray(1,-1); ray(1,1);
+      ray(-1,0); ray(1,0); ray(0,-1); ray(0,1);
+      return moves;
+    }
+
+    return moves;
+  }
+
+  resetBtn.addEventListener('click', init);
+  init();
+})();
+</script>
+</body>
+</html>
